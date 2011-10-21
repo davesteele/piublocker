@@ -1,0 +1,217 @@
+#!/usr/bin/python
+
+from BeautifulSoup import BeautifulSoup
+
+import urllib
+
+import json
+
+import copy
+
+import re
+
+
+class Pkg:
+    def __init__( self, name, state=None, parent = None ):
+        self.name = name          # package name
+        self.state = state        # e.g. "dependency-failed-testing"
+        self.parents = [ parent ] # list of names of pkgs which depend
+                                  #     on this
+        self.blockers = []        # list of failed pkgs ultimately blocking this
+        self.block_count = -1     # number of packages in dep state because of
+                                  #    this package (if > 0)
+        self.last_visited = None  # internal variable to detect circular refs
+
+    def add_info( self, state=None, parent=None ):
+
+        if state:
+            #if state == "state-dependency-failed-testing"  \
+            #    and self.state != "state-dependency-failed-testing":
+            #    print "Weirdness with ", self.name
+
+            self.state = state
+
+        if parent:
+            self.parents.append( parent )
+            self.parents = list( set( self.parents ) )
+
+class Pkgs:
+    def __init__( self, dist="sid", debug = True ):
+        # store a dict of Pkg, indexed by package name
+        self.pkgdict = {}
+
+        self.url = "http://piuparts.debian.org/%s/state-dependency-failed-testing.html" % dist
+
+        self.debug = debug
+
+    def dprint( self, strng ):
+        if self.debug:
+            print( strng )
+
+    def add_pkg( self, name, state=None, parent=None ):
+        if name in self.pkgdict:
+            # we already know of this package, update state and parent info
+            self.pkgdict[name].add_info( state, parent )
+        else:
+            self.pkgdict[name] = Pkg( name, state, parent )
+
+    def set_blocker( self, pkgname, blockername ):
+
+        if not self.pkgdict[ pkgname ].last_visited == blockername:
+            self.pkgdict[ pkgname ].last_visited = blockername
+
+            self.pkgdict[ pkgname ].blockers.append( blockername )
+
+            self.pkgdict[ blockername ].block_count += 1
+
+            for parent in self.pkgdict[ pkgname ].parents:
+                if parent:
+                    self.set_blocker( parent, blockername )
+
+
+    def parse_page( self, pg ):
+
+        soup = BeautifulSoup( pg )
+
+        # navigate to the package table on the web page
+        rtbl = soup( attrs = { 'class': 'contentcell2' }, limit=1 )[0]
+        troot = rtbl.ul
+
+        # get a full list of fragments representing dependency-failed pkgs
+        pkgs_html = troot.li.findNextSiblings( 'li' )
+        pkgs_html.append( troot.li )
+
+        
+        for pkg_html in pkgs_html:
+            # add this package to the list
+            self.add_pkg( pkg_html['id'], "state-dependency-failed-testing"  )
+
+            # get a full list of dependencies for this package
+            subtbl = pkg_html.ul
+
+            subs_html = subtbl.li.findNextSiblings( 'li' )
+            subs_html.append( subtbl.li )
+
+            for sub_html in subs_html:
+                try:
+                    sub_name = sub_html.a.string
+
+                    sub_state = re.search( "^\/.+\/(.+).html#", sub_html.a['href'] ).group(1)
+
+                    # add this package, referencing the parent package
+                    self.add_pkg( sub_name, sub_state, pkg_html['id'] )
+
+                except AttributeError:
+                    # if there is no link, this isn't package in a state we
+                    # care about
+                    pass
+                pass
+
+        # set the ultimate blockers for each failed-dependency pkg
+        # and set the block count for each blocker
+        [ self.set_blocker( x, x ) for x,y in self.pkgdict.items() if y.state == "state-failed-testing" ]
+
+    def generate_data_file( self, path="./piudata.json" ):
+
+        self.dprint( "Retrieving dependency web page" )
+
+        pg = urllib.urlopen( self.url )
+        pg_text = pg.read()
+        pg.close()
+
+        self.dprint( "Parsing web page" )
+
+        self.parse_page( pg_text )
+
+        self.dprint( "Saving data file" )
+
+        transfer_data = [ [ y.name, y.state, y.parents, y.blockers, y.block_count ]
+                        for x,y in self.pkgdict.items() ]
+        fl = open( path, "w" )
+        fl.write( json.dumps( transfer_data ) )
+        fl.close()
+
+    def load_data_file( self, path="./piudata.json" ):
+
+        fl = open( path, "r" )
+        transfer_data = json.loads( fl.read() )
+        fl.close()
+
+        for entry in transfer_data:
+            pkg = Pkg( entry[0] )
+            pkg.state = entry[1]
+            pkg.parents = entry[2]
+            pkg.blockers = entry[3]
+            pkg.block_count = entry[4]
+            self.pkgdict[entry[0]] = pkg
+
+    def num_dep_failed( self ):
+        return( len ( [ x for x,y in self.pkgdict.items()
+                       if y.state == "state-dependency-failed-testing"
+                          and len( y.blockers ) > 0  ] ) )
+
+    def num_failed_testing( self ):
+        return( len ( [ x for x,y in self.pkgdict.items()
+                       if y.state == "state-failed-testing" ] ) )
+
+    def del_blocker( self, blocker ):
+
+        blocked = [ x for x, y in self.pkgdict.items() if blocker in y.blockers ]
+
+        for victim in blocked:
+            self.pkgdict[victim].blockers.remove( blocker )
+
+        self.pkgdict = { x:y for x,y in self.pkgdict.items() if len( y.blockers ) > 0 }
+
+    def blocker_list( self ):
+        block_list = [ [ y.block_count, y.name ] for x,y in self.pkgdict.items()
+                        if y.block_count > 0 ]
+        return( sorted( block_list, reverse=True ) )
+
+    def blocker_impact( self, blocker ):
+
+        thecopy = copy.deepcopy( self )
+
+        before = thecopy.num_dep_failed()
+        thecopy.del_blocker( blocker )
+        after = thecopy.num_dep_failed()
+
+        return( before - after )
+
+def main():
+
+
+    pkgs = Pkgs()
+
+    try:
+        pkgs.load_data_file()
+    except IOError:
+        Pkgs().generate_data_file()
+
+        pkgs = Pkgs()
+        pkgs.load_data_file()
+        pass
+    
+    #pkgs.generate_data_file()
+    #pkgs.load_data_file()
+
+    blk_list = pkgs.blocker_list()
+
+    cum = copy.deepcopy( pkgs )
+
+    print "dependency failed - ", pkgs.num_dep_failed()
+    print "failed testing - ", pkgs.num_failed_testing()
+    print
+    print "blocking free cum  package"
+
+    for count, blocker in blk_list:
+        impact = pkgs.blocker_impact( blocker )
+        cum.del_blocker( blocker )
+        print "%4d    %4d  %4d %s" % ( count, impact, cum.num_dep_failed(), blocker )
+
+    #for pkg in pkgs.pkgdict:
+    #    print pkg, pkgs.pkgdict[pkg].state, pkgs.pkgdict[pkg].block_count, pkgs.pkgdict[pkg].parents, pkgs.pkgdict[pkg].blockers
+
+
+if __name__ == "__main__":
+    main()
