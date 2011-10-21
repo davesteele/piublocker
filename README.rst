@@ -34,11 +34,11 @@ The cumulative effect of removing the top blocking failed packages on this date 
 
 
 
-.. image:: images/Screenshot.png
+.. image:: raw/master/images/Screenshot.png
 
 This is a typical distribution of packages states in Debian sid piuparts. The packages in state-dependency-failed-testing are in dark red (from http://piuparts.debian.org/sid/)
 
-.. image:: images/states.png
+.. image:: raw/master/images/states.png
 
 The application parses http://piuparts.debian.org/sid/state-dependency-failed-testing.html to gather package data. The information is stored locally in the file piudata.json, to speed up subsequent runs. Delete the file to cause the data to be downloaded again.
 
