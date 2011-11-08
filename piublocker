@@ -10,6 +10,26 @@ import copy
 
 import re
 
+import sys
+
+sys.path.append( "." )
+
+import subprocess
+
+
+
+def rdep_list( package ):
+    fnull = open( "/dev/null", "w" )
+    output = subprocess.check_output( [ "/usr/bin/apt-rdepends", "-r", package ], stderr=fnull )
+    fnull.close()
+
+    output = list( set( [ x.split(" ")[4] for x in output.split("\n") if "Reverse Depends" in x ] ) )
+
+    return output
+
+def rdep_count( package ):
+    return( len( rdep_list( package ) ) )
+
 
 class Pkg:
     def __init__( self, name, state=None, parent = None ):
@@ -202,12 +222,12 @@ def main():
     print "dependency failed - ", pkgs.num_dep_failed()
     print "failed testing - ", pkgs.num_failed_testing()
     print
-    print "blocking free cum  package"
+    print "blocking free cum  rdeps package"
 
     for count, blocker in blk_list:
         impact = pkgs.blocker_impact( blocker )
         cum.del_blocker( blocker )
-        print "%4d    %4d  %4d %s" % ( count, impact, cum.num_dep_failed(), blocker )
+        print "%4d    %4d  %4d %5d %s" % ( count, impact, cum.num_dep_failed(), rdep_count(blocker), blocker )
 
     #for pkg in pkgs.pkgdict:
     #    print pkg, pkgs.pkgdict[pkg].state, pkgs.pkgdict[pkg].block_count, pkgs.pkgdict[pkg].parents, pkgs.pkgdict[pkg].blockers
